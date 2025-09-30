@@ -200,13 +200,13 @@ void CannedMessageModule::drawHeader(OLEDDisplay *display, int16_t x, int16_t y,
 {
     if (graphics::isHighResolution) {
         if (this->dest == NODENUM_BROADCAST) {
-            display->drawStringf(x, y, buffer, "To: Broadcast#%s", channels.getName(this->channel));
+            display->drawStringf(x, y, buffer, "To: #%s", channels.getName(this->channel));
         } else {
             display->drawStringf(x, y, buffer, "To: %s", getNodeName(this->dest));
         }
     } else {
         if (this->dest == NODENUM_BROADCAST) {
-            display->drawStringf(x, y, buffer, "To: Broadc#%.5s", channels.getName(this->channel));
+            display->drawStringf(x, y, buffer, "To: #%.5s", channels.getName(this->channel));
         } else {
             display->drawStringf(x, y, buffer, "To: %s", getNodeName(this->dest));
         }
@@ -961,6 +961,9 @@ void CannedMessageModule::sendText(NodeNum dest, ChannelIndex channel, const cha
     this->lastSentNode = dest;
     this->incoming = dest;
 
+    // Track this packet’s request ID for matching ACKs
+    this->lastRequestId = p->id;
+
     // Copy payload
     p->decoded.payload.size = strlen(message);
     memcpy(p->decoded.payload.bytes, message, p->decoded.payload.size);
@@ -1008,7 +1011,7 @@ void CannedMessageModule::sendText(NodeNum dest, ChannelIndex channel, const cha
         sm.dest = dest;
         sm.type = MessageType::DM_TO_US;
     }
-    sm.ackStatus = AckStatus::UNKNOWN;
+    sm.ackStatus = AckStatus::NONE;
 
     messageStore.addLiveMessage(sm);
 
@@ -1059,7 +1062,6 @@ int32_t CannedMessageModule::runOnce()
             graphics::NotificationRenderer::virtualKeyboard = nullptr;
         }
 
-        temporaryMessage = "";
         return INT32_MAX;
     }
 
@@ -1103,7 +1105,6 @@ int32_t CannedMessageModule::runOnce()
         (this->runState == CANNED_MESSAGE_RUN_STATE_ACK_NACK_RECEIVED) ||
         (this->runState == CANNED_MESSAGE_RUN_STATE_MESSAGE_SELECTION)) {
         this->runState = CANNED_MESSAGE_RUN_STATE_INACTIVE;
-        temporaryMessage = "";
         e.action = UIFrameEvent::Action::REGENERATE_FRAMESET;
         this->currentMessageIndex = -1;
         this->freetext = "";
@@ -1368,16 +1369,6 @@ int CannedMessageModule::getPrevIndex()
     } else {
         return this->currentMessageIndex - 1;
     }
-}
-void CannedMessageModule::showTemporaryMessage(const String &message)
-{
-    temporaryMessage = message;
-    UIFrameEvent e;
-    e.action = UIFrameEvent::Action::REGENERATE_FRAMESET; // We want to change the list of frames shown on-screen
-    notifyObservers(&e);
-    runState = CANNED_MESSAGE_RUN_STATE_MESSAGE_SELECTION;
-    // run this loop again in 2 seconds, next iteration will clear the display
-    setIntervalFromNow(2000);
 }
 
 #if defined(USE_VIRTUAL_KEYBOARD)
@@ -1728,6 +1719,9 @@ void CannedMessageModule::drawEmotePickerScreen(OLEDDisplay *display, OLEDDispla
     int _visibleRows = (display->getHeight() - listTop - 2) / rowHeight;
     int numEmotes = graphics::numEmotes;
 
+    // keep member variable in sync
+    this->visibleRows = _visibleRows;
+
     // Clamp highlight index
     if (emotePickerIndex < 0)
         emotePickerIndex = 0;
@@ -1749,7 +1743,7 @@ void CannedMessageModule::drawEmotePickerScreen(OLEDDisplay *display, OLEDDispla
     // Draw emote rows
     display->setTextAlignment(TEXT_ALIGN_LEFT);
 
-    for (int vis = 0; vis < visibleRows; ++vis) {
+    for (int vis = 0; vis < _visibleRows; ++vis) {
         int emoteIdx = topIndex + vis;
         if (emoteIdx >= numEmotes)
             break;
@@ -1776,11 +1770,11 @@ void CannedMessageModule::drawEmotePickerScreen(OLEDDisplay *display, OLEDDispla
     }
 
     // Draw scrollbar if needed
-    if (numEmotes > visibleRows) {
-        int scrollbarHeight = visibleRows * rowHeight;
+    if (numEmotes > _visibleRows) {
+        int scrollbarHeight = _visibleRows * rowHeight;
         int scrollTrackX = display->getWidth() - 6;
         display->drawRect(scrollTrackX, listTop, 4, scrollbarHeight);
-        int scrollBarLen = std::max(6, (scrollbarHeight * visibleRows) / numEmotes);
+        int scrollBarLen = std::max(6, (scrollbarHeight * _visibleRows) / numEmotes);
         int scrollBarPos = listTop + (scrollbarHeight * topIndex) / numEmotes;
         display->fillRect(scrollTrackX, scrollBarPos, 4, scrollBarLen);
     }
@@ -1797,16 +1791,6 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
     if (!(runState == CANNED_MESSAGE_RUN_STATE_ACTIVE || runState == CANNED_MESSAGE_RUN_STATE_FREETEXT ||
           runState == CANNED_MESSAGE_RUN_STATE_DESTINATION_SELECTION || runState == CANNED_MESSAGE_RUN_STATE_EMOTE_PICKER)) {
         return; // bail if not in a UI state that should render
-    }
-
-    // Draw temporary message if available
-    if (temporaryMessage.length() != 0) {
-        requestFocus(); // Tell Screen::setFrames to move to our module's frame
-        LOG_DEBUG("Draw temporary message: %s", temporaryMessage.c_str());
-        display->setTextAlignment(TEXT_ALIGN_CENTER);
-        display->setFont(FONT_MEDIUM);
-        display->drawString(display->getWidth() / 2 + x, 0 + y + 12, temporaryMessage);
-        return;
     }
 
     // Emote Picker Screen
@@ -2158,72 +2142,93 @@ void CannedMessageModule::drawFrame(OLEDDisplay *display, OLEDDisplayUiState *st
 
 ProcessMessage CannedMessageModule::handleReceived(const meshtastic_MeshPacket &mp)
 {
-    if (mp.decoded.portnum == meshtastic_PortNum_ROUTING_APP && waitingForAck) {
+    // Only process routing ACK/NACK packets that are responses to our own outbound
+    if (mp.decoded.portnum == meshtastic_PortNum_ROUTING_APP && waitingForAck && mp.to == nodeDB->getNodeNum() &&
+        mp.decoded.request_id == this->lastRequestId) // only ACKs for our last sent packet
+    {
         if (mp.decoded.request_id != 0) {
             // Decode the routing response
             meshtastic_Routing decoded = meshtastic_Routing_init_default;
             pb_decode_from_bytes(mp.decoded.payload.bytes, mp.decoded.payload.size, meshtastic_Routing_fields, &decoded);
 
-            // Track hop metadata
-            this->lastAckWasRelayed = (mp.hop_limit != mp.hop_start);
-            this->lastAckHopStart = mp.hop_start;
-            this->lastAckHopLimit = mp.hop_limit;
-
-            // Determine ACK status
+            // Determine ACK/NACK status
             bool isAck = (decoded.error_reason == meshtastic_Routing_Error_NONE);
             bool isFromDest = (mp.from == this->lastSentNode);
             bool wasBroadcast = (this->lastSentNode == NODENUM_BROADCAST);
 
             // Identify the responding node
             if (wasBroadcast && mp.from != nodeDB->getNodeNum()) {
-                this->incoming = mp.from; // Relayed by another node
+                this->incoming = mp.from; // relayed by another node
             } else {
-                this->incoming = this->lastSentNode; // Direct reply
+                this->incoming = this->lastSentNode; // direct reply
             }
 
-            // Final ACK confirmation logic
-            this->ack = isAck && (wasBroadcast || isFromDest);
+            // Final ACK/NACK logic
+            if (wasBroadcast) {
+                // Any ACK counts for broadcast
+                this->ack = isAck;
+                waitingForAck = false;
+            } else if (isFromDest) {
+                // Only ACK from destination counts as final
+                this->ack = isAck;
+                waitingForAck = false;
+            } else if (isAck) {
+                // Relay ACK → mark as RELAYED, still no final ACK
+                this->ack = false;
+                waitingForAck = false; // don’t wait for more
+            } else {
+                // Explicit failure
+                this->ack = false;
+                waitingForAck = false;
+            }
 
-            waitingForAck = false;
-
-            // Update last sent StoredMessage with ACK/NACK result
+            // Update last sent StoredMessage with ACK/NACK/RELAYED result
             if (!messageStore.getMessages().empty()) {
                 StoredMessage &last = const_cast<StoredMessage &>(messageStore.getMessages().back());
                 if (last.sender == nodeDB->getNodeNum()) { // only update our own messages
-                    if (this->ack) {
+                    if (wasBroadcast && isAck) {
                         last.ackStatus = AckStatus::ACKED;
+                    } else if (isFromDest && isAck) {
+                        last.ackStatus = AckStatus::ACKED;
+                    } else if (!isFromDest && isAck) {
+                        last.ackStatus = AckStatus::RELAYED;
                     } else {
-                        // If error_reason was explicit, you can map to NACKED; otherwise TIMEOUT
-                        last.ackStatus =
-                            (decoded.error_reason == meshtastic_Routing_Error_NONE) ? AckStatus::ACKED : AckStatus::NACKED;
+                        last.ackStatus = AckStatus::NACKED;
                     }
                 }
             }
 
-            // Capture radio metrics from this ACK/NACK packet
+            // Capture radio metrics
             this->lastRxRssi = mp.rx_rssi;
             this->lastRxSnr = mp.rx_snr;
 
-            // Show ACK/NACK as overlay banner
+            // Show overlay banner
             if (screen) {
                 graphics::BannerOverlayOptions opts;
-                static char buf[96];
+                static char buf[128];
+
+                const char *channelName = channels.getName(this->channel);
+                const char *nodeName = getNodeName(this->incoming);
 
                 if (this->ack) {
                     if (this->lastSentNode == NODENUM_BROADCAST) {
-                        snprintf(buf, sizeof(buf), "Broadcast sent to \n%s\n\nSNR: %.1f dB RSSI: %d dBm",
-                                 channels.getName(this->channel), this->lastRxSnr, this->lastRxRssi);
-                    } else if (this->lastAckHopLimit > this->lastAckHopStart) {
-                        snprintf(buf, sizeof(buf), "Delivered (%d hops) to \n%s\n\nSNR: %.1f dB RSSI: %d dBm",
-                                 this->lastAckHopLimit - this->lastAckHopStart, getNodeName(this->incoming), this->lastRxSnr,
-                                 this->lastRxRssi);
+                        snprintf(buf, sizeof(buf), "Message sent to\n#%s\n\nSNR: %.1f dB RSSI: %d dBm",
+                                 (channelName && channelName[0]) ? channelName : "unknown", this->lastRxSnr, this->lastRxRssi);
                     } else {
-                        snprintf(buf, sizeof(buf), "Delivered to %s\n\nSNR: \n%.1f dB RSSI: %d dBm", getNodeName(this->incoming),
-                                 this->lastRxSnr, this->lastRxRssi);
+                        snprintf(buf, sizeof(buf), "DM sent to\n@%s\n\nSNR: %.1f dB RSSI: %d dBm",
+                                 (nodeName && nodeName[0]) ? nodeName : "unknown", this->lastRxSnr, this->lastRxRssi);
                     }
+                } else if (isAck && !isFromDest) {
+                    // Relay ACK banner
+                    snprintf(buf, sizeof(buf), "DM Relayed\n(Status Unknown)%s\n\nSNR: %.1f dB RSSI: %d dBm",
+                             (nodeName && nodeName[0]) ? nodeName : "unknown", this->lastRxSnr, this->lastRxRssi);
                 } else {
-                    snprintf(buf, sizeof(buf), "Delivery failed to \n%s", getNodeName(this->incoming), this->lastRxSnr,
-                             this->lastRxRssi);
+                    if (this->lastSentNode == NODENUM_BROADCAST) {
+                        snprintf(buf, sizeof(buf), "Message failed to\n#%s",
+                                 (channelName && channelName[0]) ? channelName : "unknown");
+                    } else {
+                        snprintf(buf, sizeof(buf), "DM failed to\n@%s", (nodeName && nodeName[0]) ? nodeName : "unknown");
+                    }
                 }
 
                 opts.message = buf;

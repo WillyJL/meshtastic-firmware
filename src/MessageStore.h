@@ -13,10 +13,11 @@ enum class MessageType : uint8_t { BROADCAST = 0, DM_TO_US = 1 };
 
 // Delivery status for messages we sent
 enum class AckStatus : uint8_t {
-    UNKNOWN = 0, // default (not yet resolved)
-    ACKED = 1,   // got a valid ACK
+    NONE = 0,    // just sent, waiting (no symbol shown)
+    ACKED = 1,   // got a valid ACK from destination
     NACKED = 2,  // explicitly failed
-    TIMEOUT = 3  // no ACK after retry window
+    TIMEOUT = 3, // no ACK after retry window
+    RELAYED = 4  // got an ACK from relay, not destination
 };
 
 struct StoredMessage {
@@ -43,7 +44,7 @@ struct StoredMessage {
     // Default constructor to initialize all fields safely
     StoredMessage()
         : timestamp(0), sender(0), channelIndex(0), text(""), dest(0xffffffff), type(MessageType::BROADCAST),
-          isBootRelative(false), ackStatus(AckStatus::UNKNOWN)
+          isBootRelative(false), ackStatus(AckStatus::NONE) // start as NONE (waiting, no symbol)
     {
     }
 };
@@ -71,6 +72,10 @@ class MessageStore
     void dismissOldestMessage();
     void dismissNewestMessage();
 
+    // New targeted dismiss helpers
+    void dismissOldestMessageInChannel(uint8_t channel);
+    void dismissOldestMessageWithPeer(uint32_t peer);
+
     // Unified accessor (for UI code, defaults to RAM buffer)
     const std::deque<StoredMessage> &getMessages() const { return liveMessages; }
 
@@ -84,6 +89,9 @@ class MessageStore
 
     // Upgrade boot-relative timestamps once RTC is valid
     void upgradeBootRelativeTimestamps();
+
+    // Debug helper to log serialized size of messages
+    void logMemoryUsage(const char *context) const;
 
   private:
     std::deque<StoredMessage> liveMessages;

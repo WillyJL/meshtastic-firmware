@@ -10,6 +10,23 @@
 using graphics::MessageRenderer::setThreadMode;
 using graphics::MessageRenderer::ThreadMode;
 
+static size_t getMessageSize(const StoredMessage &m)
+{
+    // serialized size = fixed 16 bytes + text length (capped at MAX_MESSAGE_SIZE)
+    return 16 + std::min(static_cast<size_t>(MAX_MESSAGE_SIZE), m.text.size());
+}
+
+void MessageStore::logMemoryUsage(const char *context) const
+{
+    size_t total = 0;
+    for (const auto &m : messages) {
+        total += getMessageSize(m);
+    }
+
+    LOG_DEBUG("MessageStore[%s]: %u messages, est %u bytes (~%u KB)", context, (unsigned)messages.size(), (unsigned)total,
+              (unsigned)(total / 1024));
+}
+
 MessageStore::MessageStore(const std::string &label)
 {
     filename = "/Messages_" + label + ".msgs";
@@ -60,8 +77,8 @@ const StoredMessage &MessageStore::addFromPacket(const meshtastic_MeshPacket &pa
             sm.type = MessageType::DM_TO_US;
         }
 
-        // Outgoing messages start as UNKNOWN until ACK/NACK arrives
-        sm.ackStatus = AckStatus::UNKNOWN;
+        // Outgoing messages start as NONE until ACK/NACK arrives
+        sm.ackStatus = AckStatus::NONE;
     } else {
         // Normal incoming
         sm.sender = packet.from;
@@ -109,8 +126,8 @@ void MessageStore::addFromString(uint32_t sender, uint8_t channelIndex, const st
     sm.dest = NODENUM_BROADCAST;
     sm.type = MessageType::BROADCAST;
 
-    // Manual/outgoing messages start as UNKNOWN until ACK/NACK arrives
-    sm.ackStatus = AckStatus::UNKNOWN;
+    // Outgoing messages start as NONE until ACK/NACK arrives
+    sm.ackStatus = AckStatus::NONE;
 
     addLiveMessage(sm);
 }
@@ -150,6 +167,9 @@ void MessageStore::saveToFlash()
     spiLock->unlock();
 
     f.close();
+
+    // Debug after saving
+    logMemoryUsage("saveToFlash");
 #else
     // Filesystem not available, skip persistence
 #endif
@@ -208,10 +228,10 @@ void MessageStore::loadFromFlash()
             if (f.readBytes((char *)&statusByte, 1) == 1) {
                 m.ackStatus = static_cast<AckStatus>(statusByte);
             } else {
-                m.ackStatus = AckStatus::UNKNOWN; // fallback
+                m.ackStatus = AckStatus::NONE;
             }
         } else {
-            m.ackStatus = AckStatus::UNKNOWN; // legacy files
+            m.ackStatus = AckStatus::NONE;
         }
 
         // Recompute type from dest
@@ -225,6 +245,9 @@ void MessageStore::loadFromFlash()
         liveMessages.push_back(m); // restore into RAM buffer
     }
     f.close();
+
+    // Debug after loading
+    logMemoryUsage("loadFromFlash");
 #endif
 }
 
@@ -251,6 +274,54 @@ void MessageStore::dismissOldestMessage()
     if (!messages.empty()) {
         messages.pop_front();
     }
+    saveToFlash();
+}
+
+// Dismiss oldest message in a specific channel
+void MessageStore::dismissOldestMessageInChannel(uint8_t channel)
+{
+    auto it = std::find_if(liveMessages.begin(), liveMessages.end(), [channel](const StoredMessage &m) {
+        return m.type == MessageType::BROADCAST && m.channelIndex == channel;
+    });
+    if (it != liveMessages.end()) {
+        liveMessages.erase(it);
+    }
+
+    auto it2 = std::find_if(messages.begin(), messages.end(), [channel](const StoredMessage &m) {
+        return m.type == MessageType::BROADCAST && m.channelIndex == channel;
+    });
+    if (it2 != messages.end()) {
+        messages.erase(it2);
+    }
+
+    saveToFlash();
+}
+
+// Dismiss oldest message in a direct conversation with a peer
+void MessageStore::dismissOldestMessageWithPeer(uint32_t peer)
+{
+    auto it = std::find_if(liveMessages.begin(), liveMessages.end(), [peer](const StoredMessage &m) {
+        if (m.type == MessageType::DM_TO_US) {
+            uint32_t other = (m.sender == nodeDB->getNodeNum()) ? m.dest : m.sender;
+            return other == peer;
+        }
+        return false;
+    });
+    if (it != liveMessages.end()) {
+        liveMessages.erase(it);
+    }
+
+    auto it2 = std::find_if(messages.begin(), messages.end(), [peer](const StoredMessage &m) {
+        if (m.type == MessageType::DM_TO_US) {
+            uint32_t other = (m.sender == nodeDB->getNodeNum()) ? m.dest : m.sender;
+            return other == peer;
+        }
+        return false;
+    });
+    if (it2 != messages.end()) {
+        messages.erase(it2);
+    }
+
     saveToFlash();
 }
 
