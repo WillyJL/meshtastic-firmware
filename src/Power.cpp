@@ -563,6 +563,7 @@ class AnalogBatteryLevel : public HasBatteryLevel
                    config.power.device_battery_ina_address) {
             if (!ina226Sensor.isInitialized())
                 return ina226Sensor.runOnce() > 0;
+            return ina226Sensor.isRunning();
         } else if (nodeTelemetrySensorsMap[meshtastic_TelemetrySensorType_INA260].first ==
                    config.power.device_battery_ina_address) {
             if (!ina260Sensor.isInitialized())
@@ -692,6 +693,16 @@ bool Power::setup()
 #ifdef NRF_APM
     found = true;
 #endif
+#ifdef EXT_PWR_DETECT
+    attachInterrupt(
+        EXT_PWR_DETECT,
+        []() {
+            power->setIntervalFromNow(0);
+            runASAP = true;
+            BaseType_t higherWake = 0;
+        },
+        CHANGE);
+#endif
 
     enabled = found;
     low_voltage_counter = 0;
@@ -758,9 +769,9 @@ void Power::shutdown()
     playShutdownMelody();
 #endif
     nodeDB->saveToDisk();
-    // === Save live messages before powering off ===
+#if HAS_SCREEN
     messageStore.saveToFlash();
-
+#endif
 #if defined(ARCH_NRF52) || defined(ARCH_ESP32) || defined(ARCH_RP2040)
 #ifdef PIN_LED1
     ledOff(PIN_LED1);

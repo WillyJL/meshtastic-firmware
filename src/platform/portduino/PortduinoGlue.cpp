@@ -202,7 +202,7 @@ void portduinoSetup()
         exit(EXIT_SUCCESS);
     }
 
-    if (portduino_config.lora_module == use_simradio) {
+    if (portduino_config.force_simradio) {
         std::cout << "Running in simulated mode." << std::endl;
         portduino_config.MaxNodes = 200; // Default to 200 nodes
         // Set the random seed equal to TCPPort to have a different seed per instance
@@ -373,11 +373,13 @@ void portduinoSetup()
     }
 
     getMacAddr(dmac);
+#ifndef UNIT_TEST
     if (dmac[0] == 0 && dmac[1] == 0 && dmac[2] == 0 && dmac[3] == 0 && dmac[4] == 0 && dmac[5] == 0) {
         std::cout << "*** Blank MAC Address not allowed!" << std::endl;
         std::cout << "Please set a MAC Address in config.yaml using either MACAddress or MACAddressSource." << std::endl;
         exit(EXIT_FAILURE);
     }
+#endif
     printf("MAC ADDRESS: %02X:%02X:%02X:%02X:%02X:%02X\n", dmac[0], dmac[1], dmac[2], dmac[3], dmac[4], dmac[5]);
     // Rather important to set this, if not running simulated.
     randomSeed(time(NULL));

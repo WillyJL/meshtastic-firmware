@@ -6,10 +6,7 @@
 #include "NodeListRenderer.h"
 #include "UIRenderer.h"
 #include "airtime.h"
-#include "configuration.h"
 #include "gps/GeoCoord.h"
-#include "graphics/Screen.h"
-#include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
 #include "graphics/images.h"
 #include "main.h"
@@ -27,6 +24,16 @@ namespace graphics
 {
 NodeNum UIRenderer::currentFavoriteNodeNum = 0;
 std::vector<meshtastic_NodeInfoLite *> graphics::UIRenderer::favoritedNodes;
+
+static inline void drawSatelliteIcon(OLEDDisplay *display, int16_t x, int16_t y)
+{
+    int yOffset = (isHighResolution) ? -5 : 1;
+    if (isHighResolution) {
+        NodeListRenderer::drawScaledXBitmap16x16(x, y + yOffset, imgSatellite_width, imgSatellite_height, imgSatellite, display);
+    } else {
+        display->drawXbm(x + 1, y + yOffset, imgSatellite_width, imgSatellite_height, imgSatellite);
+    }
+}
 
 void graphics::UIRenderer::rebuildFavoritedNodes()
 {
@@ -243,16 +250,16 @@ void UIRenderer::drawGpsCoordinates(OLEDDisplay *display, int16_t x, int16_t y, 
 
 // Draw nodes status
 void UIRenderer::drawNodes(OLEDDisplay *display, int16_t x, int16_t y, const meshtastic::NodeStatus *nodeStatus, int node_offset,
-                           bool show_total, String additional_words)
+                           bool show_total, const char *additional_words)
 {
     char usersString[20];
     int nodes_online = (nodeStatus->getNumOnline() > 0) ? nodeStatus->getNumOnline() + node_offset : 0;
 
-    snprintf(usersString, sizeof(usersString), "%d %s", nodes_online, additional_words.c_str());
+    snprintf(usersString, sizeof(usersString), "%d %s", nodes_online, additional_words);
 
     if (show_total) {
         int nodes_total = (nodeStatus->getNumTotal() > 0) ? nodeStatus->getNumTotal() + node_offset : 0;
-        snprintf(usersString, sizeof(usersString), "%d/%d %s", nodes_online, nodes_total, additional_words.c_str());
+        snprintf(usersString, sizeof(usersString), "%d/%d %s", nodes_online, nodes_total, additional_words);
     }
 
 #if (defined(USE_EINK) || defined(ILI9341_DRIVER) || defined(ILI9342_DRIVER) || defined(ST7701_CS) || defined(ST7735_CS) ||      \
@@ -563,6 +570,7 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
     display->setTextAlignment(TEXT_ALIGN_LEFT);
     display->setFont(FONT_SMALL);
     int line = 1;
+    meshtastic_NodeInfoLite *ourNode = nodeDB->getMeshNode(nodeDB->getNodeNum());
 
     // === Header ===
 #if defined(M5STACK_UNITC6L)
@@ -616,14 +624,7 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
         } else {
             displayLine = config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_NOT_PRESENT ? "No GPS" : "GPS off";
         }
-        int yOffset = (isHighResolution) ? 3 : 1;
-        if (isHighResolution) {
-            NodeListRenderer::drawScaledXBitmap16x16(x, getTextPositions(display)[line] + yOffset - 5, imgSatellite_width,
-                                                     imgSatellite_height, imgSatellite, display);
-        } else {
-            display->drawXbm(x + 1, getTextPositions(display)[line] + yOffset, imgSatellite_width, imgSatellite_height,
-                             imgSatellite);
-        }
+        drawSatelliteIcon(display, x, getTextPositions(display)[line]);
         int xOffset = (isHighResolution) ? 6 : 0;
         display->drawString(x + 11 + xOffset, getTextPositions(display)[line], displayLine);
     } else {
@@ -740,7 +741,6 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
     int yOffset = (isHighResolution) ? 0 : 5;
     std::string longNameStr;
 
-    meshtastic_NodeInfoLite *ourNode = nodeDB->getMeshNode(nodeDB->getNodeNum());
     if (ourNode && ourNode->has_user && strlen(ourNode->user.long_name) > 0) {
         longNameStr = sanitizeString(ourNode->user.long_name);
     }
@@ -775,7 +775,7 @@ void UIRenderer::drawDeviceFocused(OLEDDisplay *display, OLEDDisplayUiState *sta
 
 // Start Functions to write date/time to the screen
 // Helper function to check if a year is a leap year
-bool isLeapYear(int year)
+constexpr bool isLeapYear(int year)
 {
     return (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0));
 }
@@ -1000,37 +1000,13 @@ void UIRenderer::drawCompassAndLocationScreen(OLEDDisplay *display, OLEDDisplayU
     const char *displayLine = ""; // Initialize to empty string by default
     meshtastic_NodeInfoLite *ourNode = nodeDB->getMeshNode(nodeDB->getNodeNum());
 
-    bool usePhoneGPS = (ourNode && nodeDB->hasValidPosition(ourNode) &&
-                        config.position.gps_mode != meshtastic_Config_PositionConfig_GpsMode_ENABLED);
-
-    if (usePhoneGPS) {
-        // Phone-provided GPS is active
-        displayLine = "Phone GPS";
-        int yOffset = (isHighResolution) ? 3 : 1;
-        if (isHighResolution) {
-            NodeListRenderer::drawScaledXBitmap16x16(x, getTextPositions(display)[line] + yOffset - 5, imgSatellite_width,
-                                                     imgSatellite_height, imgSatellite, display);
-        } else {
-            display->drawXbm(x + 1, getTextPositions(display)[line] + yOffset, imgSatellite_width, imgSatellite_height,
-                             imgSatellite);
-        }
-        int xOffset = (isHighResolution) ? 6 : 0;
-        display->drawString(x + 11 + xOffset, getTextPositions(display)[line++], displayLine);
-    } else if (config.position.gps_mode != meshtastic_Config_PositionConfig_GpsMode_ENABLED) {
-        // GPS disabled / not present
+    if (config.position.gps_mode != meshtastic_Config_PositionConfig_GpsMode_ENABLED) {
         if (config.position.fixed_position) {
             displayLine = "Fixed GPS";
         } else {
             displayLine = config.position.gps_mode == meshtastic_Config_PositionConfig_GpsMode_NOT_PRESENT ? "No GPS" : "GPS off";
         }
-        int yOffset = (isHighResolution) ? 3 : 1;
-        if (isHighResolution) {
-            NodeListRenderer::drawScaledXBitmap16x16(x, getTextPositions(display)[line] + yOffset - 5, imgSatellite_width,
-                                                     imgSatellite_height, imgSatellite, display);
-        } else {
-            display->drawXbm(x + 1, getTextPositions(display)[line] + yOffset, imgSatellite_width, imgSatellite_height,
-                             imgSatellite);
-        }
+        drawSatelliteIcon(display, x, getTextPositions(display)[line]);
         int xOffset = (isHighResolution) ? 6 : 0;
         display->drawString(x + 11 + xOffset, getTextPositions(display)[line++], displayLine);
     } else {
@@ -1108,9 +1084,7 @@ void UIRenderer::drawCompassAndLocationScreen(OLEDDisplay *display, OLEDDisplayU
 
         // === Final Row: Altitude ===
         char altitudeLine[32] = {0};
-        int32_t alt = (strcmp(displayLine, "Phone GPS") == 0 && ourNode && nodeDB->hasValidPosition(ourNode))
-                          ? ourNode->position.altitude
-                          : geoCoord.getAltitude();
+        int32_t alt = geoCoord.getAltitude();
         if (config.display.units == meshtastic_Config_DisplayConfig_DisplayUnits_IMPERIAL) {
             snprintf(altitudeLine, sizeof(altitudeLine), "Alt: %.0fft", alt * METERS_TO_FEET);
         } else {

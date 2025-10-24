@@ -1,6 +1,7 @@
 #include "configuration.h"
 #if HAS_SCREEN
 #include "ClockRenderer.h"
+#include "Default.h"
 #include "GPS.h"
 #include "MenuHandler.h"
 #include "MeshRadio.h"
@@ -118,6 +119,8 @@ void menuHandler::LoraRegionPicker(uint32_t duration)
     bannerOptions.bannerCallback = [](int selected) -> void {
         if (selected != 0 && config.lora.region != _meshtastic_Config_LoRaConfig_RegionCode(selected)) {
             config.lora.region = _meshtastic_Config_LoRaConfig_RegionCode(selected);
+            auto changes = SEGMENT_CONFIG;
+
             // This is needed as we wait til picking the LoRa region to generate keys for the first time.
             if (!owner.is_licensed) {
                 bool keygenSuccess = false;
@@ -126,6 +129,7 @@ void menuHandler::LoraRegionPicker(uint32_t duration)
                     if (crypto->regeneratePublicKey(config.security.public_key.bytes, config.security.private_key.bytes)) {
                         keygenSuccess = true;
                     }
+
                 } else {
                     LOG_INFO("Generate new PKI keys");
                     crypto->generateKeyPair(config.security.public_key.bytes, config.security.private_key.bytes);
@@ -143,7 +147,14 @@ void menuHandler::LoraRegionPicker(uint32_t duration)
             if (myRegion->dutyCycle < 100) {
                 config.lora.ignore_mqtt = true; // Ignore MQTT by default if region has a duty cycle limit
             }
-            service->reloadConfig(SEGMENT_CONFIG);
+
+            if (strncmp(moduleConfig.mqtt.root, default_mqtt_root, strlen(default_mqtt_root)) == 0) {
+                //  Default broker is in use, so subscribe to the appropriate MQTT root topic for this region
+                sprintf(moduleConfig.mqtt.root, "%s/%s", default_mqtt_root, myRegion->name);
+                changes |= SEGMENT_MODULECONFIG;
+            }
+
+            service->reloadConfig(changes);
             rebootAtMsec = (millis() + DEFAULT_REBOOT_SECONDS * 1000);
         }
     };
@@ -406,35 +417,40 @@ void menuHandler::messageResponseMenu()
     int options = 0;
 
     auto mode = graphics::MessageRenderer::getThreadMode();
-    int ch = graphics::MessageRenderer::getThreadChannel();
-    uint32_t peer = graphics::MessageRenderer::getThreadPeer();
 
     optionsArray[options] = "Back";
     optionsEnumArray[options++] = Back;
 
-    optionsArray[options] = "Conversations";
-    optionsEnumArray[options++] = ViewMode;
-
-    // Only show Dismiss All in View All mode
-    if (mode == graphics::MessageRenderer::ThreadMode::ALL) {
-        optionsArray[options] = "Dismiss All";
-        optionsEnumArray[options++] = DismissAll;
-    }
-
-    optionsArray[options] = "Dismiss Oldest";
-    optionsEnumArray[options++] = DismissOldest;
-
 #if defined(M5STACK_UNITC6L)
-    optionsArray[options] = "Reply Preset";
+    optionsArray[options] = "Respond Preset";
 #else
-    optionsArray[options] = "Reply via Preset";
+    optionsArray[options] = "Respond via Preset";
 #endif
     optionsEnumArray[options++] = Preset;
 
     if (kb_found) {
-        optionsArray[options] = "Reply via Freetext";
+        optionsArray[options] = "Respond via Freetext";
         optionsEnumArray[options++] = Freetext;
     }
+
+    optionsArray[options] = "View Chats";
+    optionsEnumArray[options++] = ViewMode;
+
+    // Only show Dismiss All in View All mode
+    if (mode == graphics::MessageRenderer::ThreadMode::ALL) {
+#if defined(M5STACK_UNITC6L)
+        optionsArray[options] = "Delete All";
+#else
+        optionsArray[options] = "Delete All Chats";
+#endif
+        optionsEnumArray[options++] = DismissAll;
+    }
+    if (isHighResolution) {
+        optionsArray[options] = "Delete Oldest Message";
+    } else {
+        optionsArray[options] = "Delete Oldest Msg";
+    }
+    optionsEnumArray[options++] = DismissOldest;
 
 #ifdef HAS_I2S
     optionsArray[options] = "Read Aloud";
@@ -465,9 +481,7 @@ void menuHandler::messageResponseMenu()
         } else if (selected == DismissAll) {
             messageStore.clearAllMessages();
             graphics::MessageRenderer::clearThreadRegistries();
-
-            // Reset back to "View All"
-            graphics::MessageRenderer::setThreadMode(graphics::MessageRenderer::ThreadMode::ALL);
+            graphics::MessageRenderer::clearMessageCache();
         } else if (selected == DismissOldest) {
             auto mode = graphics::MessageRenderer::getThreadMode();
             int ch = graphics::MessageRenderer::getThreadChannel();
@@ -537,7 +551,7 @@ void menuHandler::messageViewModeMenu()
 
     labels.push_back("Back");
     ids.push_back(-1);
-    labels.push_back("View All");
+    labels.push_back("View All Chats");
     ids.push_back(-2);
 
     // Channels with messages
@@ -597,7 +611,7 @@ void menuHandler::messageViewModeMenu()
             snprintf(buf, sizeof(buf), "Node %08X", peer);
             name = buf;
         }
-        labels.push_back("DM: " + name);
+        labels.push_back("@" + name);
         int encPeer = 1000 + (int)idToPeer.size();
         ids.push_back(encPeer);
         idToPeer.push_back(peer);
@@ -847,19 +861,37 @@ void menuHandler::systemBaseMenu()
 
 void menuHandler::favoriteBaseMenu()
 {
-    enum optionsNumbers { Back, Preset, Freetext, Remove, TraceRoute, enumEnd };
+    enum optionsNumbers { Back, Preset, Freetext, GoToChat, Remove, TraceRoute, enumEnd };
+
+    static const char *optionsArray[enumEnd] = {"Back"};
+    static int optionsEnumArray[enumEnd] = {Back};
+    int options = 1;
+
+    // Only show "View Conversation" if a message exists with this node
+    uint32_t peer = graphics::UIRenderer::currentFavoriteNodeNum;
+    bool hasConversation = false;
+    for (const auto &m : messageStore.getMessages()) {
+        if ((m.sender == peer || m.dest == peer)) {
+            hasConversation = true;
+            break;
+        }
+    }
+    if (hasConversation) {
+        optionsArray[options] = "Go To Chat";
+        optionsEnumArray[options++] = GoToChat;
+    }
 #if defined(M5STACK_UNITC6L)
-    static const char *optionsArray[enumEnd] = {"Back", "New Preset"};
+    optionsArray[options] = "New Preset";
 #else
-    static const char *optionsArray[enumEnd] = {"Back", "New Preset Msg"};
+    optionsArray[options] = "New Preset Msg";
 #endif
-    static int optionsEnumArray[enumEnd] = {Back, Preset};
-    int options = 2;
+    optionsEnumArray[options++] = Preset;
 
     if (kb_found) {
         optionsArray[options] = "New Freetext Msg";
         optionsEnumArray[options++] = Freetext;
     }
+
 #if !defined(M5STACK_UNITC6L)
     optionsArray[options] = "Trace Route";
     optionsEnumArray[options++] = TraceRoute;
@@ -881,6 +913,17 @@ void menuHandler::favoriteBaseMenu()
             cannedMessageModule->LaunchWithDestination(graphics::UIRenderer::currentFavoriteNodeNum);
         } else if (selected == Freetext) {
             cannedMessageModule->LaunchFreetextWithDestination(graphics::UIRenderer::currentFavoriteNodeNum);
+        }
+        // Handle new Go To Thread action
+        else if (selected == GoToChat) {
+            // Switch thread to direct conversation with this node
+            graphics::MessageRenderer::setThreadMode(graphics::MessageRenderer::ThreadMode::DIRECT, -1,
+                                                     graphics::UIRenderer::currentFavoriteNodeNum);
+
+            // Manually create and send a UIFrameEvent to trigger the jump
+            UIFrameEvent evt;
+            evt.action = UIFrameEvent::Action::SWITCH_TO_TEXTMESSAGE;
+            screen->handleUIFrameEvent(&evt);
         } else if (selected == Remove) {
             menuHandler::menuQueue = menuHandler::remove_favorite;
             screen->runNow();
@@ -956,6 +999,31 @@ void menuHandler::nodeListMenu()
             screen->runNow();
         } else if (selected == TraceRoute) {
             menuQueue = trace_route_menu;
+            screen->runNow();
+        }
+    };
+    screen->showOverlayBanner(bannerOptions);
+}
+
+void menuHandler::nodeNameLengthMenu()
+{
+    enum OptionsNumbers { Back, Long, Short };
+    static const char *optionsArray[] = {"Back", "Long", "Short"};
+    BannerOverlayOptions bannerOptions;
+    bannerOptions.message = "Node Name Length";
+    bannerOptions.optionsArrayPtr = optionsArray;
+    bannerOptions.optionsCount = 3;
+    bannerOptions.bannerCallback = [](int selected) -> void {
+        if (selected == Long) {
+            // Set names to long
+            LOG_INFO("Setting names to long");
+            config.display.use_long_node_name = true;
+        } else if (selected == Short) {
+            // Set names to short
+            LOG_INFO("Setting names to short");
+            config.display.use_long_node_name = false;
+        } else if (selected == Back) {
+            menuQueue = screen_options_menu;
             screen->runNow();
         }
     };
@@ -1121,11 +1189,11 @@ void menuHandler::BluetoothToggleMenu()
 
 void menuHandler::BuzzerModeMenu()
 {
-    static const char *optionsArray[] = {"All Enabled", "Disabled", "Notifications", "System Only"};
+    static const char *optionsArray[] = {"All Enabled", "Disabled", "Notifications", "System Only", "DMs Only"};
     BannerOverlayOptions bannerOptions;
     bannerOptions.message = "Buzzer Mode";
     bannerOptions.optionsArrayPtr = optionsArray;
-    bannerOptions.optionsCount = 4;
+    bannerOptions.optionsCount = 5;
     bannerOptions.bannerCallback = [](int selected) -> void {
         config.device.buzzer_mode = (meshtastic_Config_DeviceConfig_BuzzerMode)selected;
         service->reloadConfig(SEGMENT_CONFIG);
@@ -1505,10 +1573,15 @@ void menuHandler::screenOptionsMenu()
     hasSupportBrightness = false;
 #endif
 
-    enum optionsNumbers { Back, Brightness, ScreenColor };
-    static const char *optionsArray[4] = {"Back"};
-    static int optionsEnumArray[4] = {Back};
+    enum optionsNumbers { Back, NodeNameLength, Brightness, ScreenColor };
+    static const char *optionsArray[5] = {"Back"};
+    static int optionsEnumArray[5] = {Back};
     int options = 1;
+
+#if defined(T_DECK) || defined(T_LORA_PAGER)
+    optionsArray[options] = "Show Long/Short Name";
+    optionsEnumArray[options++] = NodeNameLength;
+#endif
 
     // Only show brightness for B&W displays
     if (hasSupportBrightness) {
@@ -1533,6 +1606,9 @@ void menuHandler::screenOptionsMenu()
             screen->runNow();
         } else if (selected == ScreenColor) {
             menuHandler::menuQueue = menuHandler::tftcolormenupicker;
+            screen->runNow();
+        } else if (selected == NodeNameLength) {
+            menuHandler::menuQueue = menuHandler::node_name_length_menu;
             screen->runNow();
         } else {
             menuQueue = system_base_menu;
@@ -1632,6 +1708,8 @@ void menuHandler::FrameToggles_menu()
         lora,
         clock,
         show_favorites,
+        show_telemetry,
+        show_power,
         enumEnd
     };
     static const char *optionsArray[enumEnd] = {"Finish"};
@@ -1669,6 +1747,12 @@ void menuHandler::FrameToggles_menu()
 
     optionsArray[options] = screen->isFrameHidden("show_favorites") ? "Show Favorites" : "Hide Favorites";
     optionsEnumArray[options++] = show_favorites;
+
+    optionsArray[options] = moduleConfig.telemetry.environment_screen_enabled ? "Hide Telemetry" : "Show Telemetry";
+    optionsEnumArray[options++] = show_telemetry;
+
+    optionsArray[options] = moduleConfig.telemetry.power_screen_enabled ? "Hide Power" : "Show Power";
+    optionsEnumArray[options++] = show_power;
 
     BannerOverlayOptions bannerOptions;
     bannerOptions.message = "Show/Hide Frames";
@@ -1722,6 +1806,14 @@ void menuHandler::FrameToggles_menu()
             screen->runNow();
         } else if (selected == show_favorites) {
             screen->toggleFrameVisibility("show_favorites");
+            menuHandler::menuQueue = menuHandler::FrameToggles;
+            screen->runNow();
+        } else if (selected == show_telemetry) {
+            moduleConfig.telemetry.environment_screen_enabled = !moduleConfig.telemetry.environment_screen_enabled;
+            menuHandler::menuQueue = menuHandler::FrameToggles;
+            screen->runNow();
+        } else if (selected == show_power) {
+            moduleConfig.telemetry.power_screen_enabled = !moduleConfig.telemetry.power_screen_enabled;
             menuHandler::menuQueue = menuHandler::FrameToggles;
             screen->runNow();
         }
@@ -1794,6 +1886,9 @@ void menuHandler::handleMenuSwitch(OLEDDisplay *display)
         break;
     case brightness_picker:
         BrightnessPickerMenu();
+        break;
+    case node_name_length_menu:
+        nodeNameLengthMenu();
         break;
     case reboot_menu:
         rebootMenu();

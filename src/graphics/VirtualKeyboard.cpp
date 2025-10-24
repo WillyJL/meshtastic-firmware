@@ -1,5 +1,6 @@
-#include "VirtualKeyboard.h"
 #include "configuration.h"
+#if HAS_SCREEN
+#include "VirtualKeyboard.h"
 #include "graphics/Screen.h"
 #include "graphics/ScreenFonts.h"
 #include "graphics/SharedUIDisplay.h"
@@ -353,8 +354,6 @@ void VirtualKeyboard::drawInputArea(OLEDDisplay *display, int16_t offsetX, int16
         if (screenHeight <= 64) {
             textY = boxY + (boxHeight - inputLineH) / 2;
         } else {
-            const int innerLeft = boxX + 1;
-            const int innerRight = boxX + boxWidth - 2;
             const int innerTop = boxY + 1;
             const int innerBottom = boxY + boxHeight - 2;
 
@@ -736,3 +735,4 @@ bool VirtualKeyboard::isTimedOut() const
 }
 
 } // namespace graphics
+#endif
