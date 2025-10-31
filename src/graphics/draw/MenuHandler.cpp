@@ -581,11 +581,10 @@ void menuHandler::systemBaseMenu()
 
     optionsArray[options] = "Notifications";
     optionsEnumArray[options++] = Notifications;
-#if defined(ST7789_CS) || defined(ST7796_CS) || defined(USE_OLED) || defined(USE_SSD1306) || defined(USE_SH1106) ||              \
-    defined(USE_SH1107) || defined(HELTEC_MESH_NODE_T114) || defined(HELTEC_VISION_MASTER_T190) || HAS_TFT
+
+    // Screen Options - include for all devices with displays
     optionsArray[options] = "Screen Options";
     optionsEnumArray[options++] = ScreenOptions;
-#endif
 
     optionsArray[options] = "Frame Visiblity Toggle";
     optionsEnumArray[options++] = FrameToggles;
@@ -988,8 +987,8 @@ void menuHandler::BrightnessPickerMenu()
 
         if (selected != 0) { // Not "Back"
                              // Apply brightness immediately
-#if defined(HELTEC_MESH_NODE_T114) || defined(HELTEC_VISION_MASTER_T190)
-            // For HELTEC devices, use analogWrite to control backlight
+#if defined(HELTEC_MESH_NODE_T114) || defined(HELTEC_VISION_MASTER_T190) || (defined(USE_ST7789) && defined(VTFT_LEDA))
+            // For HELTEC and Cardputer Adv devices, use analogWrite to control backlight via PWM
             analogWrite(VTFT_LEDA, uiconfig.screen_brightness);
 #elif defined(ST7789_CS) || defined(ST7796_CS)
             static_cast<TFTDisplay *>(screen->getDisplayDevice())->setDisplayBrightness(uiconfig.screen_brightness);
@@ -1320,7 +1319,8 @@ void menuHandler::screenOptionsMenu()
 {
     // Check if brightness is supported
     bool hasSupportBrightness = false;
-#if defined(ST7789_CS) || defined(USE_OLED) || defined(USE_SSD1306) || defined(USE_SH1106) || defined(USE_SH1107)
+#if defined(ST7789_CS) || defined(ST7796_CS) || defined(USE_OLED) || defined(USE_SSD1306) || defined(USE_SH1106) || defined(USE_SH1107) || \
+    defined(HELTEC_MESH_NODE_T114) || defined(HELTEC_VISION_MASTER_T190) || defined(USE_ST7789) || defined(VTFT_CTRL) || defined(VTFT_LEDA)
     hasSupportBrightness = true;
 #endif
 

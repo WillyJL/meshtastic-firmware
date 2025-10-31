@@ -558,6 +558,9 @@ void Screen::setup()
     // === Apply loaded brightness ===
 #if defined(ST7789_CS)
     static_cast<TFTDisplay *>(dispdev)->setDisplayBrightness(brightness);
+#elif defined(USE_ST7789) && defined(VTFT_LEDA)
+    // For ST7789 displays, control backlight via PWM on VTFT_LEDA pin
+    analogWrite(VTFT_LEDA, brightness);
 #elif defined(USE_OLED) || defined(USE_SSD1306) || defined(USE_SH1106) || defined(USE_SH1107) || defined(USE_SPISSD1306)
     dispdev->setBrightness(brightness);
 #endif

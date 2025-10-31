@@ -99,7 +99,7 @@
 #define TFT_WIDTH 240
 #define TFT_OFFSET_X 0
 #define TFT_OFFSET_Y 0
-#define BRIGHTNESS_DEFAULT 100 // Medium Low Brightnes
+#define BRIGHTNESS_DEFAULT 255 // High brightness
 #endif
 
 // LoRa
