@@ -3,6 +3,10 @@
 #include "CardputerAdvKeyboard.h"
 #include "main.h"
 
+#if CANNED_MESSAGE_MODULE_ENABLE
+#include "modules/CannedMessageModule.h"
+#endif
+
 #define _TCA8418_COLS 8
 #define _TCA8418_ROWS 7
 #define _TCA8418_NUM_KEYS 56
@@ -180,7 +184,42 @@ void CardputerAdvKeyboard::released()
         return;
     }
 
-    queueEvent(CardputerAdvTapMap[last_key][modifierFlag % CardputerAdvTapMod[last_key]]);
+    // Context-aware arrow key behavior
+    // Keys: , ; . / (indices for row 5, columns 3,6,7 and row 6 column 7)
+    // When NOT in text entry: default (no modifier) = arrow, FN = punctuation
+    // When IN text entry: default (no modifier) = punctuation, FN = arrow
+    uint8_t effectiveModifier = modifierFlag % CardputerAdvTapMod[last_key];
+
+    // Check if this is one of the arrow keys (comma=43, semicolon=46, period=47, slash=51)
+    if (last_key == 43 || last_key == 46 || last_key == 47 || last_key == 51) {
+#if CANNED_MESSAGE_MODULE_ENABLE
+        // Check if we're in text entry mode
+        bool inTextEntry = cannedMessageModule && cannedMessageModule->isCharInputAllowed();
+
+        if (inTextEntry) {
+            // In text entry: swap modifier behavior
+            // No modifier (0) should give punctuation (index 0), FN (2) should give arrow (index 2)
+            // So we leave it as-is - the map already has punctuation at [0] and arrow at [2]
+        } else {
+            // Not in text entry: swap to make arrows default
+            // No modifier (0) should give arrow (index 2), FN (2) should give punctuation (index 0)
+            if (effectiveModifier == 0) {
+                effectiveModifier = 2; // Use index 2 (arrow) instead of 0 (punctuation)
+            } else if (effectiveModifier == 2) {
+                effectiveModifier = 0; // Use index 0 (punctuation) instead of 2 (arrow)
+            }
+        }
+#else
+        // Without canned message module, always use arrows as default
+        if (effectiveModifier == 0) {
+            effectiveModifier = 2;
+        } else if (effectiveModifier == 2) {
+            effectiveModifier = 0;
+        }
+#endif
+    }
+
+    queueEvent(CardputerAdvTapMap[last_key][effectiveModifier]);
     if (isModifierKey(last_key) == false)
         modifierFlag = 0;
 }
